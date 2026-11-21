@@ -1,0 +1,9 @@
+{
+  "name": "aster-magpie",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AsterGate Claude provider and quota for Magpie",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "README.md"]
+}

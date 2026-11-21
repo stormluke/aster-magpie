@@ -4,8 +4,10 @@ AsterGate 的 Magpie Provider。登录后自动读取该 Key 可用的 Claude �
 
 ## 安装与使用
 
-在插件目录执行：
+克隆仓库后，将插件目录添加到 Magpie。
 
+    git clone https://github.com/stormluke/aster-magpie.git
+    cd aster-magpie
     magpie plugin add "$PWD"
     magpie plugin login astergate
     magpie quota astergate

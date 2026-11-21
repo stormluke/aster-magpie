@@ -2,6 +2,7 @@
   "name": "aster-magpie",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "AsterGate Claude provider and quota for Magpie",
   "type": "module",
   "main": "./index.mjs",

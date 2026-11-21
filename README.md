@@ -1,5 +1,7 @@
 # Astra Magpie
 
+<img src="https://beta.astergate.cc/favicon.svg" alt="AsterGate" width="72" height="72">
+
 AsterGate 的 Magpie Provider。登录后自动读取该 Key 可用的 Claude 模型，并在 Magpie 的 Usage 和 Provider 账号卡中显示 5 小时、每周额度及重置时间。额度按 AsterGate 报告的上游账号分开显示，供查看。
 
 ## 安装与使用

@@ -6,5 +6,11 @@
   "description": "AsterGate Claude provider and quota for Magpie",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["index.mjs", "README.md"]
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "magpie": {
+    "icon": "https://beta.astergate.cc/favicon.svg"
+  }
 }

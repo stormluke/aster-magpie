@@ -6,21 +6,25 @@ AsterGate 的 Magpie Provider。登录后自动读取该 Key 可用的 Claude �
 
 ## 安装与使用
 
-克隆仓库后，将插件目录添加到 Magpie。
+在 Magpie 的终端执行：
 
-    git clone https://github.com/stormluke/aster-magpie.git
-    cd aster-magpie
-    magpie plugin add "$PWD"
+    magpie plugin add github:stormluke/aster-magpie#v0.2.0
     magpie plugin login astergate
     magpie quota astergate
 
-也可在 Magpie 的 Plugins 页面添加本目录，再从 AsterGate 的 Provider 卡登录。登录时使用交互式提示输入 AsterGate API Key。模型以 astergate/ 为前缀，可在 Magpie 的模型选择器中手动选用。
+登录时在交互式提示输入 API Key。模型以 astergate/ 为前缀。已有账号升级后继续使用原来的 Key。
+
+## 配置
+
+- 默认使用 https://beta.astergate.cc。自托管且协议兼容的 AsterGate 可以在 **Magpie 配置目录**创建 astergate.json，内容为 `{"origin":"https://gateway.example.com"}`。只接受 HTTPS 源地址，模型、推理和额度均使用这个地址。API Key 会发给该地址，请使用你信任的网关。保存后在 Magpie 中关闭再开启该插件以重新加载。
+- Provider 的「显示模型专属额度」默认开启。关闭后仅显示通用额度和 Key 预算。下一次额度查询生效。
+- 额度查询在内存中短暂复用登录会话，拒绝该会话时会重新登录一次。
 
 ## 接口
 
 - 余额页先通过 POST /usage-session/challenge 和 POST /usage-session/login 建立会话，再用 Cookie 调用 GET /usage-session/report。Key 随 JWE 提交，登录会话只在内存中使用。
 - 模型发现使用 GET /v1/models。推理经 POST /v1/messages 转发，保留 Anthropic 的请求格式和流式响应。
-- 两组接口均使用 https://beta.astergate.cc。额度报告没有可读数据时，Magpie 显示查询状态。
+- 两组接口使用同一个网关。额度报告没有可读数据时，Magpie 显示查询状态。
 
 [Magpie 插件接口](https://usemagpie.ai/docs/plugins) · [AsterGate 余额页](https://beta.astergate.cc/key-usage)
 

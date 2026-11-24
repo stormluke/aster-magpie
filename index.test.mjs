@@ -149,3 +149,85 @@ test("only Magpie's config directory can select a custom HTTPS gateway", async (
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("usage reports unavailable accounts instead of stale cached quota", async (t) => {
+  const challenge = "b".repeat(64);
+  const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  let reportPayload;
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("/challenge")) {
+      return Response.json({ challenge, public_key: publicKey.export({ type: "spki", format: "der" }).toString("base64url") });
+    }
+    if (url.pathname.endsWith("/login")) {
+      return new Response(null, { headers: { "set-cookie": "session=fake; Path=/usage-session" } });
+    }
+    return Response.json(reportPayload);
+  });
+
+  const plugin = await asterMagpie();
+
+  // Case 1: all upstream Claude accounts are quarantined (cached stale windows must not look healthy)
+  reportPayload = {
+    account_quota_shared: true,
+    accounts: [{
+      provider: "claude",
+      state: "unavailable",
+      unavailable_reason: "quarantined",
+      available_at: null,
+      cached: true,
+      windows: [
+        { kind: "five_hour", used_ratio: 0.13, resets_at: "2026-11-23T23:50:00Z" },
+        { kind: "weekly", used_ratio: 0.53, resets_at: "2026-11-27T17:00:00Z" },
+      ],
+    }],
+  };
+  const quarantined = await plugin.auth.usage(getAuth);
+  assert.equal(quarantined.plan, "AsterGate");
+  assert.equal(quarantined.windows.length, 1);
+  assert.equal(quarantined.windows[0].used, 100);
+  assert.equal(quarantined.windows[0].aside, undefined);
+  assert.match(quarantined.windows[0].display, /quarantined/);
+
+  // Case 2: mixed pool excludes quarantined accounts and only reports healthy accounts
+  reportPayload = {
+    account_quota_shared: true,
+    accounts: [
+      {
+        provider: "claude",
+        state: "unavailable",
+        unavailable_reason: "quarantined",
+        windows: [{ kind: "five_hour", used_ratio: 0.1 }],
+      },
+      {
+        provider: "claude",
+        state: "available",
+        windows: [{ kind: "five_hour", used_ratio: 0.4, resets_at: "2026-11-24T12:00:00Z" }],
+      },
+    ],
+  };
+  const mixed = await plugin.auth.usage(getAuth);
+  assert.deepEqual(mixed.windows.map(({ name, used, aside }) => [name, used, aside]), [
+    ["5 小时", 40, true],
+  ]);
+});
+
+test("model discovery falls back instead of wiping endpoint when AsterGate returns an empty list", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: [], first_id: null, has_more: false, last_id: null,
+  }));
+  const plugin = await asterMagpie();
+  const config = {};
+  await plugin.config(config);
+
+  const coldModels = await plugin.provider.models(config.provider.astergate, { auth });
+  assert.equal(coldModels[Symbol.for("magpie.fellBack")], true);
+  assert.ok(Object.keys(coldModels).includes("claude-opus-5-5"));
+  assert.equal(coldModels["claude-opus-5-5"].api.url, origin + "/v1");
+  assert.equal(coldModels["claude-opus-5-5"].api.npm, "@ai-sdk/anthropic");
+
+  const existing = { "claude-custom": { id: "claude-custom", api: { id: "claude-custom", url: origin + "/v1", npm: "@ai-sdk/anthropic" } } };
+  const preserved = await plugin.provider.models({ ...config.provider.astergate, models: existing }, { auth });
+  assert.equal(preserved[Symbol.for("magpie.fellBack")], true);
+  assert.deepEqual(Object.keys(preserved), ["claude-custom"]);
+});

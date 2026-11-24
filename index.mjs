@@ -7,11 +7,63 @@ const DEFAULT_ORIGIN = "https://beta.astergate.cc";
 const SESSION_TTL_MS = 5 * 60_000;
 const MAX_SESSIONS = 32;
 const SDK = "@ai-sdk/anthropic";
+const FELL_BACK = Symbol.for("magpie.fellBack");
+const FALLBACK_MODELS = [
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-opus-4-5-20251101",
+  "claude-sonnet-5-5",
+  "claude-sonnet-5",
+  "claude-sonnet-4-6",
+  "claude-fable-5-2",
+  "claude-fable-5-1",
+  "claude-fable-5",
+  "claude-haiku-5-5",
+  "claude-haiku-4-5-20251001",
+];
+const UNAVAILABLE_REASON_LABELS = {
+  quarantined: "已隔离 (quarantined)",
+  disabled: "已禁用 (disabled)",
+  sign_in_required: "需重新登录 (sign_in_required)",
+  refresh_required: "需刷新凭据 (refresh_required)",
+  unschedulable: "已暂停调度 (unschedulable)",
+  temporarily_unavailable: "暂时不可用 (temporarily_unavailable)",
+};
 const percent = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 });
 
 const b64url = (value) => Buffer.from(value).toString("base64url");
 const positive = (value) => Number.isFinite(value) && value > 0;
 const list = (value) => Array.isArray(value) ? value : [];
+const isAccountUnavailable = (account) => (
+  account?.state === "unavailable" ||
+  (typeof account?.unavailable_reason === "string" && account.unavailable_reason.length > 0)
+);
+
+function buildConfigModelEntry(id) {
+  return {
+    id,
+    name: id,
+    reasoning: true,
+    tool_call: true,
+    modalities: { input: ["text", "image"], output: ["text"] },
+  };
+}
+
+function buildModelEntry(model, base) {
+  return {
+    id: model.id,
+    name: model.display_name || model.id,
+    api: { id: model.id, url: base, npm: SDK },
+    capabilities: { reasoning: true, toolcall: true, input: { text: true, image: true }, output: { text: true } },
+    limit: {
+      ...(positive(model.context_window) ? { context: model.context_window } : {}),
+      ...(positive(model.max_output_tokens) ? { output: model.max_output_tokens } : {}),
+    },
+  };
+}
 
 function gatewayOrigin(directory) {
   if (!directory) return DEFAULT_ORIGIN;
@@ -135,31 +187,60 @@ async function readUsage(origin, key, sessions, signal) {
 }
 
 function quotaWindows(report, showModelWindows) {
-  const accounts = report.account_quota_shared === false ? [] : [
+  const allClaudeAccounts = report.account_quota_shared === false ? [] : [
     ...list(report.accounts),
     ...list(report.upstream).filter((group) => group?.via === "upstream_astergate")
       .flatMap((group) => list(group.accounts)),
-  ].filter((account) => typeof account?.provider === "string" && account.provider.toLowerCase() === "claude" && list(account.windows).length);
-  const windows = accounts.flatMap((account, index) => list(account.windows).flatMap((window) => {
-    const kind = /^(five_hour|weekly)(?:_|$)/.exec(window?.kind)?.[1];
-    if (!kind) return [];
-    const model = (typeof window.scoped_model === "string" && window.scoped_model) ||
-      list(window.applies_to_models).filter((id) => typeof id === "string").join(", ");
-    if (!showModelWindows && (model || window.scope === "model" || window.kind !== kind)) return [];
-    const label = kind === "five_hour" ? "5 小时" : "每周";
-    const span = (kind === "five_hour" ? 5 : 7 * 24) * 3600;
-    const name = [label, accounts.length > 1 ? `Claude ${index + 1}` : "", model].filter(Boolean).join(" · ");
-    let used = window.used_ratio;
-    if (!Number.isFinite(used) && positive(window.limit) && Number.isFinite(window.remaining)) {
-      used = 1 - window.remaining / window.limit;
-    }
-    if (!Number.isFinite(used) || used < 0) return [];
-    // Each window describes one upstream account inside AsterGate's pool.
-    return [{
-      name, used: used * 100, display: `剩余 ${percent.format(Math.max(0, 1 - used))}`,
-      resetsAt: window.resets_at, span, aside: true,
+  ].filter((account) => typeof account?.provider === "string" && account.provider.toLowerCase() === "claude");
+
+  const availableAccounts = allClaudeAccounts.filter((account) => !isAccountUnavailable(account));
+  const unavailableAccounts = allClaudeAccounts.filter((account) => isAccountUnavailable(account));
+
+  let windows;
+  if (allClaudeAccounts.length > 0 && availableAccounts.length === 0) {
+    const reasons = [...new Set(
+      unavailableAccounts.map((account) => (
+        typeof account.unavailable_reason === "string" && account.unavailable_reason
+          ? account.unavailable_reason
+          : "unavailable"
+      )),
+    )];
+    const reasonSummary = reasons.map((reason) => UNAVAILABLE_REASON_LABELS[reason] || reason).join("、");
+    const availableAts = unavailableAccounts
+      .map((account) => (typeof account.available_at === "string" ? Date.parse(account.available_at) : NaN))
+      .filter((ts) => Number.isFinite(ts) && ts > Date.now())
+      .sort((a, b) => a - b);
+    // Do not set aside: when every upstream account bound to this key is unavailable,
+    // routing must treat this key as exhausted (100% used) rather than 0% used.
+    windows = [{
+      name: "上游账号",
+      used: 100,
+      display: `不可用 · ${reasonSummary}`,
+      ...(availableAts.length ? { resetsAt: new Date(availableAts[0]).toISOString() } : {}),
     }];
-  }));
+  } else {
+    const accounts = availableAccounts.filter((account) => list(account.windows).length);
+    windows = accounts.flatMap((account, index) => list(account.windows).flatMap((window) => {
+      const kind = /^(five_hour|weekly)(?:_|$)/.exec(window?.kind)?.[1];
+      if (!kind) return [];
+      const model = (typeof window.scoped_model === "string" && window.scoped_model) ||
+        list(window.applies_to_models).filter((id) => typeof id === "string").join(", ");
+      if (!showModelWindows && (model || window.scope === "model" || window.kind !== kind)) return [];
+      const label = kind === "five_hour" ? "5 小时" : "每周";
+      const span = (kind === "five_hour" ? 5 : 7 * 24) * 3600;
+      const name = [label, accounts.length > 1 ? `Claude ${index + 1}` : "", model].filter(Boolean).join(" · ");
+      let used = window.used_ratio;
+      if (!Number.isFinite(used) && positive(window.limit) && Number.isFinite(window.remaining)) {
+        used = 1 - window.remaining / window.limit;
+      }
+      if (!Number.isFinite(used) || used < 0) return [];
+      // Each window describes one upstream account inside AsterGate's pool.
+      return [{
+        name, used: used * 100, display: `剩余 ${percent.format(Math.max(0, 1 - used))}`,
+        resetsAt: window.resets_at, span, aside: true,
+      }];
+    }));
+  }
   const budget = report.budget?.weekly;
   if (positive(budget?.limit_usd) && Number.isFinite(budget.spent_usd) && budget.spent_usd >= 0) {
     windows.push({
@@ -185,7 +266,12 @@ export default async function asterMagpie({ directory, magpie } = {}) {
   return {
     async config(config) {
       config.provider ??= {};
-      config.provider[PROVIDER] ??= { name: "AsterGate", npm: SDK, api: base, models: {} };
+      config.provider[PROVIDER] ??= {
+        name: "AsterGate",
+        npm: SDK,
+        api: base,
+        models: Object.fromEntries(FALLBACK_MODELS.map((id) => [id, buildConfigModelEntry(id)])),
+      };
     },
     auth: {
       provider: PROVIDER,
@@ -249,18 +335,24 @@ export default async function asterMagpie({ directory, magpie } = {}) {
         }
         const { data } = await response.json();
         if (!Array.isArray(data)) throw new Error("Invalid AsterGate model list");
-        return Object.fromEntries(data.filter((model) => (
+        const claudeModels = data.filter((model) => (
           typeof model?.id === "string" && model.id.startsWith("claude-")
-        )).map((model) => [model.id, {
-          id: model.id,
-          name: model.display_name || model.id,
-          api: { id: model.id, url: base, npm: SDK },
-          capabilities: { toolcall: true, input: { text: true, image: true }, output: { text: true } },
-          limit: {
-            ...(positive(model.context_window) ? { context: model.context_window } : {}),
-            ...(positive(model.max_output_tokens) ? { output: model.max_output_tokens } : {}),
-          },
-        }]));
+        ));
+        if (!claudeModels.length) {
+          // Returning {} wipes Magpie's provider endpoint ("has no endpoint configured");
+          // fall back with magpie.fellBack so Magpie keeps the endpoint and last known list.
+          const previous = provider?.models && typeof provider.models === "object" ? provider.models : {};
+          const entries = Object.entries(previous);
+          const fallback = entries.length > 0
+            ? Object.fromEntries(entries.map(([id, model]) => [
+              id,
+              model?.api?.url ? model : buildModelEntry({ id, display_name: model?.name }, base),
+            ]))
+            : Object.fromEntries(FALLBACK_MODELS.map((id) => [id, buildModelEntry({ id }, base)]));
+          fallback[FELL_BACK] = true;
+          return fallback;
+        }
+        return Object.fromEntries(claudeModels.map((model) => [model.id, buildModelEntry(model, base)]));
       },
     },
   };

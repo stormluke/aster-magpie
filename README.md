@@ -8,7 +8,7 @@ AsterGate 的 Magpie Provider。登录后自动读取该 Key 可用的 Claude �
 
 在 Magpie 的终端执行：
 
-    magpie plugin add github:stormluke/aster-magpie#v0.2.0
+    magpie plugin add github:stormluke/aster-magpie#v0.2.1
     magpie plugin login astergate
     magpie quota astergate
 
